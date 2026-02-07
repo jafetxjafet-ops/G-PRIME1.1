@@ -1,0 +1,21 @@
+
+{
+  "short_name": "GYM/G",
+  "name": "GYM/G Elite Performance",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#721c24",
+  "background_color": "#121212"
+}

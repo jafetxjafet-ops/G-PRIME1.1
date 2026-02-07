@@ -1,0 +1,7 @@
+{
+  "name": "GYM/G - Sistema de Entrenamiento Élite",
+  "description": "Una aplicación profesional de seguimiento fitness diseñada para ayudarte a alcanzar y superar tus metas en el gimnasio con precisión técnica.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
