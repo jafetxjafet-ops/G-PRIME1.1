@@ -27,8 +27,8 @@ import WeeklyCardioSummary from './components/WeeklyCardioSummary';
 import TitlesView from './components/TitlesView';
 import TitleUnlockOverlay from './components/TitleUnlockOverlay';
 import GoalCreator from './components/GoalCreator';
-import { auth } from './services/firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
+// Updated imports to use services/firebase which now exports auth and firebase (v8 style)
+import { auth, firebase } from './services/firebase';
 import { cloudService, GlobalState } from './services/cloudService';
 import { TITLES_DATABASE } from './constants';
 
@@ -88,7 +88,8 @@ const getExpNeededForLevel = (lvl: number) => {
 };
 
 const App: React.FC = () => {
-  const [user, setUser] = useState<User | null>(null);
+  // Use firebase.User for compatibility
+  const [user, setUser] = useState<firebase.User | null>(null);
   const [activeView, setActiveView] = useState<ViewType>('login');
   const [goals, setGoals] = useState<Goal[]>([]);
   const [workoutHistory, setWorkoutHistory] = useState<WorkoutRecord[]>([]);
@@ -96,6 +97,10 @@ const App: React.FC = () => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   
+  // Missing states required by FriendsView
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
+  const [activityFeed, setActivityFeed] = useState<Activity[]>([]);
+
   const [showLevelUp, setShowLevelUp] = useState(false);
   const [levelUpValue, setLevelUpValue] = useState(1);
   const [showTutorial, setShowTutorial] = useState(false);
@@ -106,19 +111,21 @@ const App: React.FC = () => {
   const [activeTimer, setActiveTimer] = useState<TimerConfig | null>(null);
   const [activeGoalId, setActiveGoalId] = useState<string | null>(null);
   const [titlesQueue, setTitlesQueue] = useState<Title[]>([]);
+  const [isCloudSyncing, setIsCloudSyncing] = useState(false);
 
-  const isSyncing = useRef(false);
+  const isSyncingRef = useRef(false);
 
+  // CARGA INICIAL DESDE NUBE - Updated to v8 auth style
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    const unsubscribe = auth.onAuthStateChanged(async (firebaseUser) => {
       if (firebaseUser) {
         setUser(firebaseUser);
         const cloudData = await cloudService.loadUserData(firebaseUser.uid);
         if (cloudData) {
           setSettings(cloudData.settings);
-          setWorkoutHistory(cloudData.workoutHistory);
-          setGoals(cloudData.goals);
-          setFriends(cloudData.friends);
+          setWorkoutHistory(cloudData.workoutHistory || []);
+          setGoals(cloudData.goals || []);
+          setFriends(cloudData.friends || []);
           setActiveView(cloudData.settings.height ? 'dashboard' : 'welcome');
         } else {
           setActiveView('welcome');
@@ -131,18 +138,26 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  const syncToCloud = useCallback(async () => {
-    if (!user || isSyncing.current) return;
-    isSyncing.current = true;
+  const syncToCloud = useCallback(async (stateToSync?: any) => {
+    if (!user || isSyncingRef.current) return;
+    
+    isSyncingRef.current = true;
+    setIsCloudSyncing(true);
+
     const state: GlobalState = {
-      settings,
-      workoutHistory,
-      goals,
-      friends,
+      settings: stateToSync?.settings || settings,
+      workoutHistory: stateToSync?.workoutHistory || workoutHistory,
+      goals: stateToSync?.goals || goals,
+      friends: stateToSync?.friends || friends,
       lastUpdated: new Date().toISOString()
     };
+
     await cloudService.syncUserData(user.uid, state);
-    isSyncing.current = false;
+    
+    setTimeout(() => {
+      isSyncingRef.current = false;
+      setIsCloudSyncing(false);
+    }, 1500);
   }, [user, settings, workoutHistory, goals, friends]);
 
   const getLevelStats = (totalExp: number) => {
@@ -248,7 +263,8 @@ const App: React.FC = () => {
       unlockedTitles: updatedUnlockedTitles
     };
 
-    setWorkoutHistory(prev => [newRecord, ...prev]);
+    const newHistory = [newRecord, ...workoutHistory];
+    setWorkoutHistory(newHistory);
     setSettings(updatedSettings);
 
     if (newUnlocked.length > 0) {
@@ -264,7 +280,23 @@ const App: React.FC = () => {
     
     setFinishedWorkoutData(null);
     setActiveView('dashboard');
-    setTimeout(syncToCloud, 500);
+    
+    // Auto-Sync tras entrenamiento
+    syncToCloud({ settings: updatedSettings, workoutHistory: newHistory, goals, friends });
+  };
+
+  const updateSettings = (newSettings: AppSettings) => {
+    setSettings(newSettings);
+    syncToCloud({ settings: newSettings, workoutHistory, goals, friends });
+  };
+
+  const updateGoals = (newGoals: Goal[]) => {
+    setGoals(newGoals);
+    syncToCloud({ settings, workoutHistory, goals: newGoals, friends });
+  };
+
+  const handleEncourage = (id: string) => {
+    setActivityFeed(prev => prev.map(act => act.id === id ? { ...act, encouragements: act.encouragements + 1, hasEncouraged: true } : act));
   };
 
   const navigateTo = (view: ViewType) => { setActiveView(view); setIsDrawerOpen(false); };
@@ -272,8 +304,17 @@ const App: React.FC = () => {
   const activeGoal = useMemo(() => goals.find(g => g.id === activeGoalId), [goals, activeGoalId]);
   const unreadCount = useMemo(() => notifications.filter(n => !n.read).length, [notifications]);
 
-  if (activeView === 'login') return <LoginView onLogin={(user) => syncToCloud()} onGuest={() => setActiveView('welcome')} />;
-  if (activeView === 'welcome') return <WelcomeForm onComplete={(data) => { const updated = { ...settings, ...data }; setSettings(updated); setActiveView('dashboard'); setShowTutorial(true); syncToCloud(); }} />;
+  if (activeView === 'login') return <LoginView onLogin={() => {}} onGuest={() => setActiveView('welcome')} />;
+  
+  if (activeView === 'welcome') return (
+    <WelcomeForm onComplete={(data) => { 
+      const updated = { ...settings, ...data }; 
+      setSettings(updated); 
+      setActiveView('dashboard'); 
+      setShowTutorial(true); 
+      syncToCloud({ settings: updated, workoutHistory, goals, friends }); 
+    }} />
+  );
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -284,7 +325,13 @@ const App: React.FC = () => {
       <Sidebar activeView={activeView} onNavigate={navigateTo} level={levelStats.level} currentExp={levelStats.currentLevelExp} missingExp={levelStats.expNeededForNext - levelStats.currentLevelExp} expProgress={levelStats.expProgress} userName={settings.userName} streak={settings.streak} onEditProfile={() => setIsEditProfileOpen(true)} settings={settings} />
       
       <main className="flex-1 overflow-y-auto scroll-smooth relative">
-        {showTutorial && <TutorialOverlay onComplete={() => { setSettings(prev => ({...prev, hasCompletedTutorial: true})); setShowTutorial(false); syncToCloud(); }} />}
+        {/* INDICADOR DE NUBE CLOUD */}
+        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[60] bg-black/80 backdrop-blur-xl px-4 py-2 rounded-full border border-white/10 flex items-center gap-3 transition-all duration-500 ${isCloudSyncing ? 'translate-y-0 opacity-100' : '-translate-y-20 opacity-0'}`}>
+           <i className="fa-solid fa-cloud-arrow-up text-emerald-500 animate-pulse"></i>
+           <span className="text-[10px] font-black uppercase text-white tracking-widest">Progreso guardado en la nube ☁️</span>
+        </div>
+
+        {showTutorial && <TutorialOverlay onComplete={() => { const updated = {...settings, hasCompletedTutorial: true}; setSettings(updated); setShowTutorial(false); syncToCloud({settings: updated, workoutHistory, goals, friends}); }} />}
         {finishedWorkoutData && <ExerciseResultsFlow snapshots={finishedWorkoutData.exp.exerciseSnapshots} settings={settings} onComplete={finalizeWorkoutResults} />}
         
         <header className="p-4 md:px-8 border-b border-white/5 flex gap-4 items-center sticky top-0 z-30 bg-black/40 backdrop-blur-xl">
@@ -327,19 +374,29 @@ const App: React.FC = () => {
 
         <div className="p-4 md:p-8 max-w-5xl mx-auto view-transition-enter mb-24">
           {activeView === 'dashboard' && <Dashboard activeGoal={activeGoal} goalsCount={goals.length} onNavigate={navigateTo} notifications={notifications.filter(n => !n.read).slice(0, 2)} onRemoveNotification={(id) => setNotifications(prev => prev.map(n => n.id === id ? {...n, read: true} : n))} streak={settings.streak} />}
-          {activeView === 'friends' && <FriendsView friends={friends} setFriends={setFriends} onBack={() => navigateTo('dashboard')} />}
+          {activeView === 'friends' && (
+            <FriendsView 
+              friends={friends} 
+              setFriends={setFriends} 
+              friendRequests={friendRequests}
+              setFriendRequests={setFriendRequests}
+              activityFeed={activityFeed}
+              onBack={() => navigateTo('dashboard')}
+              onEncourage={handleEncourage}
+            />
+          )}
           {activeView === 'notifications' && <NotificationCenter notifications={notifications} onRemove={(id) => setNotifications(prev => prev.filter(n => n.id !== id))} onBack={() => navigateTo('dashboard')} />}
           {activeView === 'active-workout' && <WorkoutView activeGoal={activeGoal} workoutHistory={workoutHistory} streak={settings.streak} onFinish={(record, exp) => setFinishedWorkoutData({ record, exp })} onCancel={() => navigateTo('dashboard')} />}
           {activeView === 'cardio' && <CardioView onFinish={(record, exp) => setFinishedWorkoutData({ record, exp })} onCancel={() => navigateTo('dashboard')} streak={settings.streak} />}
           {activeView === 'competitive' && <CompetitiveView friends={friends} workoutHistory={workoutHistory} settings={settings} onBack={() => navigateTo('dashboard')} />}
-          {activeView === 'settings' && <SettingsView settings={settings} setSettings={(s) => { setSettings(s); syncToCloud(); }} onLogout={() => auth.signOut()} onReset={() => { localStorage.clear(); window.location.reload(); }} />}
+          {activeView === 'settings' && <SettingsView settings={settings} setSettings={updateSettings} onLogout={() => auth.signOut()} onReset={() => { localStorage.clear(); window.location.reload(); }} />}
           {activeView === 'achievements' && <AchievementsView level={levelStats.level} onBack={() => navigateTo('dashboard')} />}
           {activeView === 'timers' && <TimersView onStartTimer={setActiveTimer} />}
-          {activeView === 'goals-list' && <GoalsListView goals={goals} activeGoalId={activeGoalId} onToggleGoal={setActiveGoalId} onDeleteGoal={(id) => { setGoals(prev => prev.filter(g => g.id !== id)); syncToCloud(); }} onBack={() => navigateTo('dashboard')} />}
+          {activeView === 'goals-list' && <GoalsListView goals={goals} activeGoalId={activeGoalId} onToggleGoal={setActiveGoalId} onDeleteGoal={(id) => updateGoals(goals.filter(g => g.id !== id))} onBack={() => navigateTo('dashboard')} />}
           {activeView === 'routines' && <ExerciseLibrary workoutHistory={workoutHistory} />}
           {activeView === 'statistics' && <StatisticsView workoutHistory={workoutHistory} settings={settings} onBack={() => navigateTo('dashboard')} />}
-          {activeView === 'titles' && <TitlesView settings={settings} setSettings={(s) => { setSettings(s); syncToCloud(); }} onBack={() => navigateTo('dashboard')} />}
-          {activeView === 'create-goal' && <GoalCreator onSave={(g) => { setGoals(p => [g, ...p]); navigateTo('dashboard'); syncToCloud(); }} onCancel={() => navigateTo('dashboard')} />}
+          {activeView === 'titles' && <TitlesView settings={settings} setSettings={updateSettings} onBack={() => navigateTo('dashboard')} />}
+          {activeView === 'create-goal' && <GoalCreator onSave={(g) => { const n = [g, ...goals]; setGoals(n); navigateTo('dashboard'); syncToCloud({settings, workoutHistory, goals: n, friends}); }} onCancel={() => navigateTo('dashboard')} />}
         </div>
         
         {activeView !== 'active-workout' && activeView !== 'cardio' && (
@@ -354,7 +411,7 @@ const App: React.FC = () => {
         )}
       </main>
       {isDrawerOpen && <ProfileDrawer onClose={() => setIsDrawerOpen(false)} onNavigate={navigateTo} settings={settings} level={levelStats.level} currentExp={levelStats.currentLevelExp} missingExp={levelStats.expNeededForNext - levelStats.currentLevelExp} expProgress={levelStats.expProgress} goalsCount={goals.length} onEditProfile={() => { setIsDrawerOpen(false); setIsEditProfileOpen(true); }} activeTitle={activeTitle} />}
-      {isEditProfileOpen && <EditProfileModal settings={settings} onClose={() => setIsEditProfileOpen(false)} onSave={(name, img, phone, h, w) => { setSettings(prev => ({ ...prev, userName: name, profileImage: img, phoneNumber: phone, height: h, weight: w })); syncToCloud(); }} />}
+      {isEditProfileOpen && <EditProfileModal settings={settings} onClose={() => setIsEditProfileOpen(false)} onSave={(name, img, phone, h, w) => { const updated = { ...settings, userName: name, profileImage: img, phoneNumber: phone, height: h, weight: w }; setSettings(updated); syncToCloud({settings: updated, workoutHistory, goals, friends}); }} />}
       {activeTimer && <GlobalTimerOverlay config={activeTimer} onClose={() => setActiveTimer(null)} />}
     </div>
   );

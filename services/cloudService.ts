@@ -1,6 +1,5 @@
 
-import { doc, setDoc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { auth, db, firebase } from './firebase';
 import { AppSettings, WorkoutRecord, Goal, Friend } from '../types';
 
 export interface GlobalState {
@@ -18,21 +17,20 @@ export const cloudService = {
   // FIX: Changed 'state' type to 'any' to allow logging diverse data structures like PUSH_LOG in NotificationService.ts
   syncUserData: async (uid: string, state: any) => {
     try {
-      const userRef = doc(db, 'users', uid);
+      const userRef = db.doc(`users/${uid}`);
       const dataToSave = {
         ...state,
-        serverLastUpdated: serverTimestamp()
+        serverLastUpdated: firebase.firestore.FieldValue.serverTimestamp()
       };
 
       // 1. Guardar estado principal
-      await setDoc(userRef, dataToSave, { merge: true });
+      await userRef.set(dataToSave, { merge: true });
 
-      // 2. Crear backup diario (Solo si han pasado más de 12h del último, o simplemente uno por guardado)
-      // Para simplificar, creamos un registro de historial de 7 días mediante una subcolección
-      const backupRef = collection(db, 'users', uid, 'backups');
-      await addDoc(backupRef, {
+      // 2. Crear backup diario
+      const backupRef = db.collection(`users/${uid}/backups`);
+      await backupRef.add({
         ...state,
-        createdAt: serverTimestamp()
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
 
       console.log(`[G-CLOUD] Sync successful for user: ${uid}`);
@@ -48,10 +46,10 @@ export const cloudService = {
    */
   loadUserData: async (uid: string): Promise<GlobalState | null> => {
     try {
-      const userRef = doc(db, 'users', uid);
-      const userSnap = await getDoc(userRef);
+      const userRef = db.doc(`users/${uid}`);
+      const userSnap = await userRef.get();
 
-      if (userSnap.exists()) {
+      if (userSnap.exists) {
         console.log(`[G-CLOUD] Data recovered for user: ${uid}`);
         return userSnap.data() as GlobalState;
       }
@@ -67,18 +65,16 @@ export const cloudService = {
    */
   searchUsers: async (query: string): Promise<any[]> => {
     // En una implementación real usaríamos query(collection(db, 'users'), where(...))
-    // Mantenemos la lógica de búsqueda para no romper la UI
     return [];
   },
 
   /**
    * Responde a una solicitud de amistad.
    */
-  // FIX: Added missing respondToRequest method required by FriendsView.tsx
   respondToRequest: async (requestId: string, accepted: boolean) => {
     try {
-      const requestRef = doc(db, 'friendRequests', requestId);
-      await setDoc(requestRef, { status: accepted ? 'accepted' : 'rejected' }, { merge: true });
+      const requestRef = db.doc(`friendRequests/${requestId}`);
+      await requestRef.set({ status: accepted ? 'accepted' : 'rejected' }, { merge: true });
       return true;
     } catch (error) {
       console.error("[G-CLOUD] Error responding to request:", error);
